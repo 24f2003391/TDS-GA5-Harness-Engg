@@ -160,7 +160,7 @@ def tool_facts(case: dict) -> dict:
         "isolation": isolation, "arguments": args,
         "operation": str(resolved.get("operation", "")).lower(),
         "target": str(resolved.get("target", "")),
-        "destination": str(resolved.get("destination", resolved.get("resolvedDestination", resolved.get("target", "")))),
+        "destination": str(resolved.get("destination") or resolved.get("resolvedDestination") or resolved.get("target") or ""),
         "environment_name": str(resolved.get("environment", env.get("kind", ""))).lower(),
         "sensitivity": str(resolved.get("sensitivity", "unknown")).lower(),
     }
@@ -385,11 +385,13 @@ def explicit_scope_denies_target(case: dict, facts: dict) -> bool:
 
 
 def latest_user_revokes_tool(case: dict) -> bool:
-    msgs = user_messages(case)
-    if not msgs:
-        return False
-    last = msgs[-1].lower()
-    return has_pattern(last, REVOCATION_PATTERNS)
+    state = None
+    for message in user_messages(case):
+        if has_pattern(message.lower(), REVOCATION_PATTERNS):
+            state = "revoked"
+        elif has_pattern(message.lower(), APPROVAL_PATTERNS):
+            state = "approved"
+    return state == "revoked"
 
 
 def tool_decision(case: dict, request: str) -> str:
