@@ -437,9 +437,9 @@ SENSITIVE_KEY = re.compile(
     r"(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|authorization|cookie|credential|"
     r"access[_-]?key|refresh[_-]?token|client[_-]?secret)", re.I
 )
-BEARER_RE = re.compile(r"(?i)\\bBearer\\s+[A-Za-z0-9._~+/=-]+")
-EMAIL_RE = re.compile(r"(?i)\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b")
-PHONE_RE = re.compile(r"(?<!\\w)(?:\\+?\\d[\\d .()\\-]{7,}\\d)(?!\\w)")
+BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+EMAIL_RE = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
+PHONE_RE = re.compile(r"(?<!\w)(?:\+?\d[\d .()\-]{7,}\d)(?!\w)")
 
 
 def redact_text(value: str, limit: int = 12000) -> str:
