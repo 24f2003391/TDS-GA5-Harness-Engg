@@ -413,8 +413,8 @@ def explicit_exact_personal_delete(case: dict, operation: str, target: str, envi
     for message in user_messages(case):
         msg = message.lower()
         if target.lower() in msg and has_pattern(msg, (
-            r"\\bdelete exactly\\b", r"\\bremove exactly\\b",
-        )) and has_pattern(msg, (r"\\bon my personal machine\\b", r"\\bon the personal machine\\b")):
+            r"\bdelete exactly\b", r"\bremove exactly\b",
+        )) and has_pattern(msg, (r"\bon my personal machine\b", r"\bon the personal machine\b")):
             return True
     return False
 
