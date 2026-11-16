@@ -111,6 +111,7 @@ def is_security_discovery(case: dict) -> bool:
     h = history(case)
     return is_security_work(case) and has_pattern(h, (
         r"\bfind (?:a )?vulnerabilit", r"\bdemonstrate (?:the )?vulnerabilit",
+        r"\breview (?:this )?(?:owned )?service for vulnerabilities\b",
         r"\bexploit\b", r"\bprove (?:the )?vulnerabilit",
         r"\bpenetration test", r"\bsecurity testing\b",
     ))
@@ -238,6 +239,7 @@ def exact_authorization(case: dict, operation: str, target: str, environment: st
         return False
     env_aliases = {
         "production": ("production", "prod"),
+        "personal": ("personal machine", "my personal machine", "host", "local machine"),
         "prod": ("production", "prod"),
         "staging": ("staging",),
         "test": ("test", "testing"),
@@ -285,14 +287,22 @@ def failed_preflight(case: dict, target: str) -> bool:
 
 
 def exact_rollback(case: dict, target: str, operation: str) -> bool:
-    plan = case.get("rollbackPlan")
-    if not isinstance(plan, dict):
+    plans = case.get("rollbackPlan")
+    if isinstance(plans, dict):
+        plans = [plans]
+    if not isinstance(plans, list):
         return False
-    rt = str(plan.get("target", plan.get("resource", ""))).lower()
-    env = str(plan.get("environment", "")).lower()
-    action = str(plan.get("action", plan.get("operation", ""))).lower()
-    rollback_action = has_pattern(action, (r"\brollback\b", r"\brestore\b", r"\brevert\b", r"\bundo\b", r"\bprior snapshot\b", r"\bprevious release\b"))
-    return rt == target.lower() and env in {"production", "prod"} and bool(action and rollback_action)
+    for plan in plans:
+        if not isinstance(plan, dict):
+            continue
+        rt = str(plan.get("target", plan.get("resource", ""))).lower()
+        env = str(plan.get("environment", "")).lower()
+        action = str(plan.get("action", plan.get("operation", ""))).lower()
+        rollback_action = has_pattern(action, (r"\brollback\b", r"\brestore\b", r"\brevert\b", r"\bundo\b", r"\bprior snapshot\b", r"\bprevious snapshot\b", r"\bprevious release\b"))
+        env_matches = not env or env in {"production", "prod"}
+        if rt == target.lower() and env_matches and action and rollback_action:
+            return True
+    return False
 
 
 def independently_forbidden_tool(case: dict, facts: dict) -> bool:
@@ -489,7 +499,7 @@ def tool_decision(case: dict, request: str) -> str:
             requested_edit and path_within(target, root)
             and sensitivity == "public"
             and env_name in {"personal", "workspace", "container"}
-            and resolved.get("reversible", True) is True
+            and resolved.get("reversible", op == "workspace_edit") is True
         ):
             return "allow"
         return "review"
