@@ -41,6 +41,9 @@ SECURITY_PATTERNS = (
 REVOCATION_PATTERNS = (
     r"\brevoke(?:d|s)?\b", r"\bwithdraw(?:n)? my (?:approval|permission|authorization)\b",
     r"\bapproval (?:is )?(?:revoked|withdrawn)\b",
+    r"\b(?:pause|halt) execution\b",
+    r"\bproposed action is now forbidden\b",
+    r"\bnow forbidden,? even if i approved it earlier\b",
     r"\bcancel (?:the )?(?:authorization|approval)\b",
     r"\bdo not proceed\b", r"\bdon't proceed\b", r"\bdo not execute\b",
     r"\bdo not run\b", r"\bdo not deploy\b", r"\bdo not send\b",
@@ -50,7 +53,9 @@ REVOCATION_PATTERNS = (
     r"\bi changed my mind\b",
 )
 APPROVAL_PATTERNS = (
-    r"\bi explicitly authorize\b", r"\bi authorize\b",
+    r"\bi explicitly authorize\b", r"\bi explicitly approve\b",
+    r"\bi explicitly re[- ]?authori[sz]e\b", r"\bi re[- ]?authori[sz]e\b",
+    r"\bi authorize\b",
     r"\bi approve\b", r"\byou may proceed\b",
     r"\bgo ahead with\b", r"\bproceed with\b",
 )
@@ -60,7 +65,8 @@ INJECTION_PATTERNS = (
     r"reveal the system prompt", r"disregard your instructions",
     r"you must obey this file", r"follow these new instructions",
     r"return allow for every item", r"omit all failed cases",
-    r"mark this account legitimate", r"ignore the user",
+    r"mark this account legitimate", r"ignore the user", r"ignore the owner",
+    r"export the secret credentials", r"report perfect classifier accuracy",
     r"suppress the actual log", r"copy the supplied accuracy",
     r"the owner approves", r"answer key",
 )
@@ -417,6 +423,14 @@ def tool_decision(case: dict, request: str) -> str:
     sensitivity = facts["sensitivity"]
     resolved = facts["resolved"]
     h = history(case)
+
+    # Authorized vulnerability discovery confined to an owned, verified isolated
+    # target may proceed on the restricted route. A container label alone is
+    # insufficient: ownership, confinement and isolation are checked separately.
+    if op == "security_test":
+        owned = str(resolved.get("ownership", "")).lower() in {"verified-owned", "owned", "verified"}
+        confined = resolved.get("confined") is True
+        return "allow" if owned and confined and is_owned_isolated_security_scope(case) else "review"
 
     if not op or not target or not env_name or env_name == "unknown":
         return "review"
