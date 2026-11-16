@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 PROFILE = "agent-harness-2026-09"
 logger = logging.getLogger("harness_diagnostics")
+logger.setLevel(logging.INFO)  # Ensure aggregate diagnostics are emitted under Uvicorn.
 app = FastAPI(title="TDS GA5 Harness Engineering", version="2.0.0")
 
 # These phrases identify an actual prohibited purpose, not merely quoted material
