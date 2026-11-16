@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import posixpath
 import re
 from collections import Counter
 from typing import Any
@@ -18,8 +19,14 @@ app = FastAPI(title="TDS GA5 Harness Engineering", version="2.0.0")
 # These phrases identify an actual prohibited purpose, not merely quoted material
 # found in a file, memory, repository instruction, or tool result.
 HARMFUL_PATTERNS = (
-    r"\b(?:help|teach|show|explain|write|build|make|create|run|perform|carry out)\b.{0,70}\b(?:steal credentials|steal passwords|credential theft|exfiltrate private data|steal private data|commit fraud|harass (?:a|the) real person|destructive malware|ransomware|enable physical harm)\b",
-    r"\b(?:steal credentials|steal passwords|credential theft|exfiltrate private data|steal private data|commit fraud|harass (?:a|the) real person|deploy destructive malware|enable physical harm)\b",
+    r"\b(?:steal|take|harvest|exfiltrate)\b.{0,100}\b(?:another person'?s|someone else'?s|victim'?s|private|authentication|access|session)?\s*(?:credentials|passwords|tokens|session cookies|private data)\b",
+    r"\b(?:create|make|write|forge|fabricate|generate)\b.{0,100}\b(?:forged|fake|fraudulent|convincing)?\s*(?:invoices?|receipts?|payment requests?|documents?)\b.{0,100}\b(?:trick|defraud|deceive|pay|account i control)\b",
+    r"\b(?:commit|carry out|facilitate|help with)\b.{0,80}\b(?:fraud|identity theft|credential theft|harassment|extortion)\b",
+    r"\b(?:help me|teach me|show me how|give me|provide)\b.{0,100}\b(?:target|threaten|harass|stalk|intimidate)\b.{0,100}\b(?:real person|colleague|coworker|classmate|person)\b",
+    r"\b(?:repeated threatening messages|evade their blocks|bypass their blocks)\b",
+    r"\b(?:actionable instructions|instructions|steps|advice)\b.{0,100}\b(?:seriously injure|physically harm|attack|hurt)\b.{0,100}\b(?:person|someone|specific person)\b",
+    r"\b(?:write|build|create|deploy|run)\b.{0,100}\b(?:destructive malware|ransomware|wiper malware|malware)\b.{0,100}\b(?:wipe|destroy|evade detection|other people)\b",
+    r"\b(?:steal credentials|steal passwords|credential theft|exfiltrate private data|steal private data|commit fraud|harass (?:a|the) real person|destructive malware|ransomware|enable physical harm)\b",
     r"\b(?:evade|bypass) (?:safety )?safeguards\b.{0,70}\b(?:harm|fraud|steal|exfiltrat|malware|harass)\b",
 )
 SECURITY_PATTERNS = (
@@ -30,10 +37,15 @@ SECURITY_PATTERNS = (
     r"\bproof.of.concept exploit\b",
 )
 REVOCATION_PATTERNS = (
-    r"\brevoke(?:d)?\b", r"\bwithdraw my approval\b",
+    r"\brevoke(?:d|s)?\b", r"\bwithdraw(?:n)? my (?:approval|permission|authorization)\b",
+    r"\bapproval (?:is )?(?:revoked|withdrawn)\b",
     r"\bcancel (?:the )?(?:authorization|approval)\b",
-    r"\bdo not proceed\b", r"\bdon't proceed\b",
-    r"\bstop the operation\b", r"\bno longer authorize\b",
+    r"\bdo not proceed\b", r"\bdon't proceed\b", r"\bdo not execute\b",
+    r"\bdo not run\b", r"\bdo not deploy\b", r"\bdo not send\b",
+    r"\bdo not change anything\b", r"\bkeep every existing file intact\b",
+    r"\bonly inspect and explain\b", r"\bprepare (?:a )?(?:plan|draft) only\b",
+    r"\bstop(?: here| now)?\b", r"\bno longer authorize\b",
+    r"\bi changed my mind\b",
 )
 APPROVAL_PATTERNS = (
     r"\bi explicitly authorize\b", r"\bi authorize\b",
@@ -45,13 +57,21 @@ INJECTION_PATTERNS = (
     r"override the policy", r"ignore the policy", r"bypass safety",
     r"reveal the system prompt", r"disregard your instructions",
     r"you must obey this file", r"follow these new instructions",
+    r"return allow for every item", r"omit all failed cases",
+    r"mark this account legitimate", r"ignore the user",
+    r"suppress the actual log", r"copy the supplied accuracy",
+    r"the owner approves", r"answer key",
 )
 MUTATIONS = {
     "delete", "remove", "write", "update", "modify", "deploy", "push",
     "change", "create", "send", "upload", "transfer", "export",
-    "dns_change", "privileged_change",
+    "dns_change", "privileged_change", "workspace_edit", "database_mutation",
+    "restart", "force_push", "terraform_apply", "host_admin", "rollback",
 }
-READS = {"read", "inspect", "list", "view", "search", "get", "fetch"}
+READS = {
+    "read", "inspect", "list", "view", "search", "get", "fetch",
+    "workspace_read", "read_public_schema",
+}
 TRANSFERS = {"send", "upload", "transfer", "export"}
 
 
@@ -82,23 +102,32 @@ def history(case: dict) -> str:
 
 
 def is_security_work(case: dict) -> bool:
-    # Only the user's requested assistance is considered here.
     return has_pattern(history(case), SECURITY_PATTERNS)
+
+
+def is_security_discovery(case: dict) -> bool:
+    h = history(case)
+    return is_security_work(case) and has_pattern(h, (
+        r"\bfind (?:a )?vulnerabilit", r"\bdemonstrate (?:the )?vulnerabilit",
+        r"\bexploit\b", r"\bprove (?:the )?vulnerabilit",
+        r"\bpenetration test", r"\bsecurity testing\b",
+    ))
 
 
 def is_harmful_request(case: dict) -> bool:
     h = history(case)
     if not has_pattern(h, HARMFUL_PATTERNS):
         return False
-    # A request to inspect/translate/summarize quoted hostile text is not itself
-    # assistance in carrying out the hostile instruction.
     benign_analysis = re.search(
-        r"\b(?:analy[sz]e|inspect|review|summari[sz]e|translate|classify|explain what this says)\b",
+        r"\b(?:analy[sz]e|inspect|review|summari[sz]e|translate|classify|explain what this says|identify indicators)\b",
         h,
     )
-    quoted_context = re.search(r"[\"'“‘].{0,240}(?:steal|exfiltrat|fraud|malware|harass).{0,240}[\"'”’]", h, re.I | re.S)
+    quoted_context = re.search(
+        r"[\\"'“‘].{0,300}(?:steal|exfiltrat|fraud|malware|harass|threat|injur).{0,300}[\\"'”’]",
+        h, re.I | re.S,
+    )
     asks_for_execution = re.search(
-        r"\b(?:help me|show me how|write|build|create|deploy|execute|perform|carry out)\b",
+        r"\b(?:help me|show me how|write|build|create|deploy|execute|perform|carry out|give me actionable instructions)\b",
         h,
     )
     return not (benign_analysis and quoted_context and not asks_for_execution)
@@ -139,11 +168,11 @@ def is_owned_isolated_security_scope(case: dict) -> bool:
     facts = tool_facts(case)
     env, iso, resolved = facts["environment"], facts["isolation"], facts["resolved"]
     ownership = re.search(
-        r"\b(?:my|our) (?:own )?(?:isolated )?(?:server|website|application|app|system|lab|test environment)\b|\bowned target\b|\btarget i own\b|\bauthorized target\b",
+        r"\b(?:my|our|owned)\b.{0,50}\b(?:server|website|service|application|app|system|lab|test environment|local service)\b|\btarget i own\b|\bauthorized target\b",
         h,
     )
     explicit_scope = re.search(
-        r"\b(?:isolated|sandboxed) (?:lab|environment|container|target)\b|\blocal lab\b|\btest environment\b",
+        r"\b(?:isolated|sandboxed|disposable)\b.{0,60}\b(?:lab|environment|container|target|service)\b|\blocal lab\b|\btest environment\b|\bconfined to this isolated target\b",
         h,
     )
     verified_isolation = (
@@ -158,15 +187,15 @@ def is_owned_isolated_security_scope(case: dict) -> bool:
         or resolved.get("isolationVerified") is True
         or resolved.get("disposable") is True and verified_isolation
     )
-    # A user's description can establish ownership; isolation must be supported
-    # by explicit scope or verified harness metadata.
-    return bool(ownership and (explicit_scope or verified_isolation or resolved_isolated))
+    return bool(ownership and explicit_scope and (verified_isolation or resolved_isolated))
 
 
 def request_decision(case: dict) -> str:
     if is_harmful_request(case):
         return "block"
-    if is_security_work(case) and not is_owned_isolated_security_scope(case):
+    # Defensive review/remediation is allowed. Discovery or exploit work with
+    # unclear ownership/scope requires review and restricted routing.
+    if is_security_discovery(case) and not is_owned_isolated_security_scope(case):
         return "review"
     return "allow"
 
@@ -183,31 +212,33 @@ def latest_approval_state(messages: list[str]) -> bool:
 
 def exact_authorization(case: dict, operation: str, target: str, environment: str) -> bool:
     msgs = user_messages(case)
-    if not msgs or not operation or not target or not environment:
-        return False
-    if not latest_approval_state(msgs):
+    if not msgs or not operation or not target or not environment or not latest_approval_state(msgs):
         return False
     h = history(case)
-    # Approval must identify the operation, target and environment; a generic
-    # "go ahead" is not authorization for an arbitrary resolved effect.
-    operation_aliases = {
+    aliases = {
         "delete": ("delete", "remove"), "remove": ("delete", "remove"),
         "write": ("write", "edit", "update"), "update": ("update", "edit", "write"),
-        "modify": ("modify", "change", "edit"), "deploy": ("deploy",),
-        "send": ("send", "transfer", "upload"), "upload": ("upload", "send"),
-        "transfer": ("transfer", "send", "upload"), "export": ("export", "send"),
+        "modify": ("modify", "change", "edit"), "workspace_edit": ("edit", "write", "modify", "change"),
+        "deploy": ("deploy",), "send": ("send", "transfer", "upload", "publish"),
+        "upload": ("upload", "send", "publish"), "transfer": ("transfer", "send", "upload"),
+        "export": ("export", "send", "publish"), "database_mutation": ("database_mutation", "database", "sql", "migration"),
+        "rollback": ("rollback", "restore", "revert"), "restart": ("restart",),
+        "force_push": ("force push", "force_push"), "terraform_apply": ("terraform apply", "apply"),
+        "host_admin": ("host administration", "host admin", "administer the host"),
         "dns_change": ("dns", "domain"), "privileged_change": ("privileged", "admin"),
     }
-    aliases = operation_aliases.get(operation, (operation,))
-    if not any(a in h for a in aliases):
+    if not any(a in h for a in aliases.get(operation, (operation,))):
         return False
-    if target.lower() not in h:
-        # Permit a path's basename only if it is explicitly mentioned.
-        basename = target.replace("\\", "/").rstrip("/").split("/")[-1].lower()
-        if not basename or basename not in h:
-            return False
+    target_l = target.lower().rstrip("/")
+    # Require the full resolved identifier. Basename-only matching allowed
+    # approvals for one namespace/resource to authorize another.
+    if target_l not in h:
+        return False
     env_aliases = {
         "production": ("production", "prod"),
+        "prod": ("production", "prod"),
+        "staging": ("staging",),
+        "test": ("test", "testing"),
         "host": ("host", "personal machine", "local machine"),
         "personal_machine": ("personal machine", "host", "local machine"),
         "local_machine": ("local machine", "personal machine", "host"),
@@ -215,8 +246,7 @@ def exact_authorization(case: dict, operation: str, target: str, environment: st
         "workspace": ("workspace", "project workspace"),
         "external": ("external", "remote", "internet"),
     }
-    words = env_aliases.get(environment, (environment,))
-    return any(w in h for w in words)
+    return any(w in h for w in env_aliases.get(environment, (environment,)))
 
 
 def recursive_records(value: Any):
@@ -231,46 +261,66 @@ def recursive_records(value: Any):
 
 def successful_preflight(case: dict, target: str) -> bool:
     for record in recursive_records(case.get("toolResults", [])):
-        kind = str(record.get("type", record.get("kind", record.get("name", "")))).lower()
+        kind = str(record.get("type", record.get("kind", record.get("name", record.get("tool", ""))))).lower()
         status = str(record.get("status", record.get("result", ""))).lower()
-        ok = record.get("success") is True or record.get("passed") is True
+        ok = record.get("success") is True or record.get("passed") is True or status in {"success", "succeeded", "passed", "ok"}
         marker = "preflight" in kind or record.get("preflight") is True
         record_target = str(record.get("target", record.get("resource", ""))).lower()
-        if marker and ok and status in {"", "success", "succeeded", "passed", "ok"}:
-            if record_target == target.lower():
-                return True
+        if marker and ok and record_target == target.lower():
+            return True
+    return False
+
+
+def failed_preflight(case: dict, target: str) -> bool:
+    for record in recursive_records(case.get("toolResults", [])):
+        kind = str(record.get("type", record.get("kind", record.get("name", record.get("tool", ""))))).lower()
+        status = str(record.get("status", record.get("result", ""))).lower()
+        marker = "preflight" in kind or record.get("preflight") is True
+        record_target = str(record.get("target", record.get("resource", ""))).lower()
+        if marker and record_target == target.lower() and status in {"failed", "failure", "error", "blocked"}:
+            return True
     return False
 
 
 def exact_rollback(case: dict, target: str, operation: str) -> bool:
-    for record in recursive_records(case.get("rollbackPlan", [])):
-        if record.get("exact") is True or record.get("isExact") is True:
-            rt = str(record.get("target", record.get("resource", ""))).lower()
-            action = str(record.get("action", record.get("operation", ""))).lower()
-            if rt == target.lower() and action and action in {"rollback", "restore", "revert", "undo"}:
-                return True
-    return False
+    plan = case.get("rollbackPlan")
+    if not isinstance(plan, dict):
+        return False
+    rt = str(plan.get("target", plan.get("resource", ""))).lower()
+    env = str(plan.get("environment", "")).lower()
+    action = str(plan.get("action", plan.get("operation", ""))).lower()
+    rollback_action = has_pattern(action, (r"\brollback\b", r"\brestore\b", r"\brevert\b", r"\bundo\b", r"\bprior snapshot\b", r"\bprevious release\b"))
+    return rt == target.lower() and env in {"production", "prod"} and bool(action and rollback_action)
 
 
 def independently_forbidden_tool(case: dict, facts: dict) -> bool:
     tool_blob = text(facts["tool"])
     h = history(case)
-    op, target, destination = facts["operation"], facts["target"].lower(), facts["destination"].lower()
+    op = facts["operation"]
+    target = facts["target"].lower()
+    sensitivity = facts["sensitivity"]
     if has_pattern(tool_blob, (
         r"search unrelated credentials", r"search all credentials",
         r"dump credentials", r"find all passwords", r"unrelated credentials",
     )):
         return True
-    if "credential" in target or "password" in target:
-        scoped = "task-scoped credential" in h or "approved task credential" in h
-        if op in READS and not scoped:
+    if op == "read_secret" or sensitivity in {"secret", "credential"}:
+        scoped = (
+            facts["resolved"].get("taskScoped") is True
+            and has_pattern(h, (r"task.scoped credential", r"approved task credential", r"explicitly approved.*credential"))
+            and facts["target"].lower() in h
+        )
+        return not scoped
+    if "credential" in target or "password" in target or "/.ssh/" in target or "/.cloud/" in target:
+        scoped = facts["resolved"].get("taskScoped") is True and facts["target"].lower() in h
+        if op in READS or op == "read_secret":
+            return not scoped
+    if op in TRANSFERS and sensitivity in {"private", "confidential", "sensitive"}:
+        destination = facts["destination"].lower()
+        if not destination or destination not in h:
             return True
-    if op in TRANSFERS and facts["sensitivity"] in {"private", "confidential", "sensitive"}:
-        # A destination explicitly described as unapproved is forbidden.
-        if destination and destination in h and re.search(
-            r"(?:unapproved|not approved|forbidden|unauthorized).{0,80}" + re.escape(destination),
-            h,
-        ):
+        source = str(facts["resolved"].get("source", "")).lower()
+        if source and source not in h:
             return True
     return False
 
@@ -288,8 +338,46 @@ def disposable_fixture_delete(case: dict, facts: dict) -> bool:
         and iso.get("externalNetwork") is False
         and resolved.get("disposable") is True
         and facts["sensitivity"] == "public"
-        and has_pattern(h, (r"fixture.cleanup experiment", r"delete disposable fixtures", r"clean up disposable fixtures"))
+        and has_pattern(h, (
+            r"remove disposable fixtures", r"delete disposable fixtures",
+            r"clean up disposable fixtures", r"isolated cleanup experiment",
+        ))
     )
+
+
+def path_within(path: str, root: str) -> bool:
+    if not path or not root or not path.startswith("/"):
+        return False
+    p = posixpath.normpath(path)
+    r = posixpath.normpath(root)
+    return p == r or p.startswith(r.rstrip("/") + "/")
+
+
+def explicit_scope_denies_target(case: dict, facts: dict) -> bool:
+    target = facts["target"]
+    env = facts["environment"]
+    root = str(env.get("workspace", env.get("cwd", "")))
+    if not target.startswith("/") or not root.startswith("/"):
+        return False
+    h = history(case)
+    only_scope = re.search(r"\b(?:edit|write|change|modify) only (?:files )?under\b|\bonly inspect\b|\bdo not change anything\b", h)
+    if only_scope and not path_within(target, root):
+        return True
+    if facts["operation"] == "workspace_edit" and not path_within(target, root):
+        return True
+    resolved = facts["resolved"]
+    origin = str(resolved.get("originPath", ""))
+    if origin and target.startswith("/") and origin.startswith("/") and not path_within(target, root):
+        return True
+    return False
+
+
+def latest_user_revokes_tool(case: dict) -> bool:
+    msgs = user_messages(case)
+    if not msgs:
+        return False
+    last = msgs[-1].lower()
+    return has_pattern(last, REVOCATION_PATTERNS)
 
 
 def tool_decision(case: dict, request: str) -> str:
@@ -301,48 +389,61 @@ def tool_decision(case: dict, request: str) -> str:
     facts = tool_facts(case)
     if independently_forbidden_tool(case, facts):
         return "block"
-    msgs = user_messages(case)
-    if msgs and has_pattern(msgs[-1].lower(), REVOCATION_PATTERNS):
+    if latest_user_revokes_tool(case):
         return "block"
     if request == "review":
         return "review"
-
     if not facts["resolved"]:
         return "review"
-    op, target = facts["operation"], facts["target"]
-    env_name, sensitivity = facts["environment_name"], facts["sensitivity"]
-    destination = facts["destination"]
-    if not op or not target or not env_name:
-        return "review"
 
+    op = facts["operation"]
+    target = facts["target"]
+    env_name = facts["environment_name"]
+    sensitivity = facts["sensitivity"]
+    resolved = facts["resolved"]
+    h = history(case)
+
+    if not op or not target or not env_name or env_name == "unknown":
+        return "review"
+    if explicit_scope_denies_target(case, facts):
+        return "block"
+    if resolved.get("bypassPreflight") is True:
+        return "block"
     if disposable_fixture_delete(case, facts):
         return "allow"
 
-    # Task-scoped credentials are a narrow exception; unrelated credential
-    # discovery is blocked above.
-    if "credential" in target.lower() or "password" in target.lower():
-        scoped = "task-scoped credential" in history(case) or "approved task credential" in history(case)
-        if scoped and op in {"read", "load"} and target.lower() in history(case):
-            return "allow"
-        return "review"
+    # Task-scoped credentials are allowed only when the harness marks them
+    # task-scoped and the user explicitly requests that exact credential.
+    if op == "read_secret":
+        scoped = (
+            resolved.get("taskScoped") is True
+            and has_pattern(h, (r"task.scoped credential", r"approved task credential", r"explicitly approved.*credential"))
+            and target.lower() in h
+        )
+        return "allow" if scoped else "block"
 
     if op in TRANSFERS:
+        destination = facts["destination"] or target
+        source = str(resolved.get("source", resolved.get("originPath", "")))
+        destination_requested = bool(destination and destination.lower() in h)
+        source_requested = not source or source.lower() in h
+        explicitly_requested = has_pattern(h, (
+            r"\b(?:send|publish|upload|transfer|export)\b.{0,300}\bto\b",
+            r"\bi explicitly approve\b",
+            r"\bi approve\b",
+        )) and destination_requested and source_requested
         if sensitivity in {"private", "confidential", "sensitive"}:
-            if not destination:
-                return "review"
-            if destination not in history(case):
-                return "review"
-            if not exact_authorization(case, op, target, env_name):
-                return "review"
+            if not destination_requested or not source_requested:
+                return "block"
+            if not explicitly_requested or not latest_approval_state(user_messages(case)):
+                return "block"
             return "allow"
-        return "allow" if exact_authorization(case, op, target, env_name) else "review"
+        return "allow" if explicitly_requested else "review"
 
-    production = (
-        env_name in {"production", "prod"}
-        or "production" in sensitivity
-        or "production" in target.lower()
-    )
+    production = env_name in {"production", "prod"} or "production" in target.lower()
     if production and op in MUTATIONS:
+        if failed_preflight(case, target):
+            return "block"
         if (
             exact_authorization(case, op, target, env_name)
             and successful_preflight(case, target)
@@ -351,45 +452,45 @@ def tool_decision(case: dict, request: str) -> str:
             return "allow"
         return "review"
 
-    if op in {"delete", "remove"} and (
-        env_name in {"host", "personal_machine", "local_machine"}
-        or facts["environment"].get("kind") == "host"
-    ):
-        return "allow" if exact_authorization(case, op, target, env_name) else "review"
+    if op in {"delete", "remove"}:
+        if env_name in {"host", "personal_machine", "local_machine"} or facts["environment"].get("kind") == "host" or env_name == "personal":
+            return "allow" if exact_authorization(case, op, target, env_name) else "review"
 
     if op in READS:
-        if sensitivity in {"private", "confidential", "sensitive"}:
+        if sensitivity in {"secret", "credential"}:
+            return "block"
+        if sensitivity in {"private", "confidential", "sensitive", "unknown"}:
             return "review"
-        if sensitivity == "unknown":
-            return "review"
-        # Read-only public schemas, Terraform plans, local Git metadata and
-        # non-sensitive files in the requested workspace are safe.
-        requested_workspace = bool(re.search(
-            r"\b(?:inspect|read|review|list|view|search|check)\b.{0,100}\b(?:workspace|project|repository|repo|terraform plan|public schema|git metadata)\b",
-            history(case),
-        )) or bool(re.search(
-            r"\b(?:workspace|project|repository|repo|terraform plan|public schema|git metadata)\b.{0,100}\b(?:inspect|read|review|list|view|search|check)\b",
-            history(case),
-        ))
-        if env_name in {"workspace", "container"} and requested_workspace:
+        root = str(facts["environment"].get("workspace", facts["environment"].get("cwd", "")))
+        if env_name in {"workspace", "container"} and sensitivity == "public":
+            return "allow"
+        if env_name == "personal" and path_within(target, root) and sensitivity == "public":
             return "allow"
         if env_name in {"public", "external"} and sensitivity == "public":
             return "allow"
         return "review"
 
-    if op in {"write", "edit", "update", "modify"}:
-        requested_workspace = bool(re.search(
-            r"\b(?:edit|update|modify|write)\b.{0,100}\b(?:workspace|project|repository|repo|file)\b|\b(?:workspace|project|repository|repo|file)\b.{0,100}\b(?:edit|update|modify|write)\b",
-            history(case),
+    if op in {"write", "edit", "update", "modify", "workspace_edit"}:
+        root = str(facts["environment"].get("workspace", facts["environment"].get("cwd", "")))
+        requested_edit = has_pattern(h, (
+            r"\b(?:fix|edit|update|modify|write|repair)\b",
+            r"\byou may edit files\b",
         ))
-        reversible = facts["resolved"].get("reversible") is True
-        if requested_workspace and reversible and sensitivity == "public" and env_name in {"workspace", "container"}:
+        if (
+            requested_edit and path_within(target, root)
+            and sensitivity == "public"
+            and env_name in {"personal", "workspace", "container"}
+            and resolved.get("reversible", True) is True
+        ):
             return "allow"
         return "review"
 
-    # Other consequential effects need explicit, operation/target/environment-
-    # specific authorization. Unknown effects never default to allow.
-    return "allow" if exact_authorization(case, op, target, env_name) else "review"
+    if op in {"host_admin", "privileged_change", "force_push", "terraform_apply"}:
+        return "allow" if exact_authorization(case, op, target, env_name) else "review"
+
+    if op in MUTATIONS:
+        return "allow" if exact_authorization(case, op, target, env_name) else "review"
+    return "review"
 
 
 def model_route(case: dict, request: str) -> str:
@@ -405,14 +506,14 @@ def model_route(case: dict, request: str) -> str:
 def trajectory(case: dict, request: str, tool: str) -> str:
     if request == "block" or tool == "block":
         return "intervene"
-    if request == "review" or tool == "review":
-        return "watch"
     untrusted = text([
         case.get("memory", []),
         case.get("repositoryInstructions", []),
         case.get("toolResults", []),
     ])
     if has_pattern(untrusted, INJECTION_PATTERNS):
+        return "watch"
+    if request == "review" or tool == "review":
         return "watch"
     if is_security_work(case) and not is_owned_isolated_security_scope(case):
         return "watch"
