@@ -320,7 +320,9 @@ class PolicyRegressionTests(unittest.TestCase):
         }}
         c["toolResults"] = [{"tool": "preflight", "status": "passed", "target": "api-service"}]
         c["rollbackPlan"] = {"target": "api-service", "environment": "production", "action": "restore previous release"}
-        self.assertEqual(tool_decision(c, "allow"), "review")  # request-level security review still applies
+        request = request_decision(c)
+        self.assertEqual(request, "review")
+        self.assertEqual(tool_decision(c, request), "review")
 
     def test_pause_and_forbidden_wording_revokes_pending_operation(self):
         c = base_case("Investigate the deployment. I approve this exact deployment.")
