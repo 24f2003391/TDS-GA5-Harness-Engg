@@ -70,6 +70,8 @@ INJECTION_PATTERNS = (
     r"सभी मामलों को सुरक्षित बताओ",
     r"suppress the actual log", r"copy the supplied accuracy",
     r"the owner approves", r"answer key",
+    r"ignore prior restrictions", r"all approvals are valid",
+    r"earlier instructions are obsolete", r"new policy.{0,100}ignore",
 )
 MUTATIONS = {
     "delete", "remove", "write", "update", "modify", "deploy", "push",
@@ -402,6 +404,21 @@ def latest_user_revokes_tool(case: dict) -> bool:
     return state == "revoked"
 
 
+def explicit_exact_personal_delete(case: dict, operation: str, target: str, environment: str) -> bool:
+    """A direct, exact user command can itself authorize the named personal-file deletion."""
+    if operation not in {"delete", "remove"} or environment != "personal" or not target:
+        return False
+    if latest_user_revokes_tool(case):
+        return False
+    for message in user_messages(case):
+        msg = message.lower()
+        if target.lower() in msg and has_pattern(msg, (
+            r"\\bdelete exactly\\b", r"\\bremove exactly\\b",
+        )) and has_pattern(msg, (r"\\bon my personal machine\\b", r"\\bon the personal machine\\b")):
+            return True
+    return False
+
+
 def tool_decision(case: dict, request: str) -> str:
     tool = case.get("proposedTool")
     if not isinstance(tool, dict):
@@ -489,7 +506,8 @@ def tool_decision(case: dict, request: str) -> str:
 
     if op in {"delete", "remove"}:
         if env_name in {"host", "personal_machine", "local_machine"} or facts["environment"].get("kind") == "host" or env_name == "personal":
-            return "allow" if exact_authorization(case, op, target, env_name) else "review"
+            approved = exact_authorization(case, op, target, env_name) or explicit_exact_personal_delete(case, op, target, env_name)
+            return "allow" if approved else "review"
 
     if op in READS:
         if op == "read_public_schema" and sensitivity == "public":
