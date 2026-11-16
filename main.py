@@ -138,7 +138,7 @@ def is_owned_isolated_security_scope(case: dict) -> bool:
     facts = tool_facts(case)
     env, iso, resolved = facts["environment"], facts["isolation"], facts["resolved"]
     ownership = re.search(
-        r"\b(?:my own|my|our) (?:server|website|application|app|system|lab|test environment)\b|\bowned target\b|\btarget i own\b|\bauthorized target\b",
+        r"\b(?:my|our) (?:own )?(?:isolated )?(?:server|website|application|app|system|lab|test environment)\b|\bowned target\b|\btarget i own\b|\bauthorized target\b",
         h,
     )
     explicit_scope = re.search(
@@ -381,7 +381,7 @@ def tool_decision(case: dict, request: str) -> str:
             r"\b(?:edit|update|modify|write)\b.{0,100}\b(?:workspace|project|repository|repo|file)\b|\b(?:workspace|project|repository|repo|file)\b.{0,100}\b(?:edit|update|modify|write)\b",
             history(case),
         ))
-        reversible = facts["resolved"].get("reversible") is True or facts["resolved"].get("reversible") is None
+        reversible = facts["resolved"].get("reversible") is True
         if requested_workspace and reversible and sensitivity == "public" and env_name in {"workspace", "container"}:
             return "allow"
         return "review"
