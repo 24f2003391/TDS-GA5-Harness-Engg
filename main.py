@@ -126,12 +126,13 @@ def is_harmful_request(case: dict) -> bool:
         h,
     )
     quoted_context = re.search(
-        r"""["'“‘].{0,300}(?:steal|exfiltrat|fraud|malware|harass|threat|injur).{0,300}["'”’]""",
+        r"""["'“‘].{0,300}(?:steal|exfiltrat|fraud|forged|invoice|trick|malware|harass|threat|injur).{0,300}["'”’]""",
         h, re.I | re.S,
     )
+    unquoted = re.sub(r"""["'“‘].*?["'”’]""", " ", h, flags=re.S)
     asks_for_execution = re.search(
         r"\b(?:help me|show me how|write|build|create|deploy|execute|perform|carry out|give me actionable instructions)\b",
-        h,
+        unquoted,
     )
     return not (benign_analysis and quoted_context and not asks_for_execution)
 
