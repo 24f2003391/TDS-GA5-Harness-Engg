@@ -1,6 +1,7 @@
 import unittest
 
-from main import (classify_case, request_decision, tool_decision,\n                  sanitize_for_diagnostics, diagnostic_reasons)
+from main import (classify_case, request_decision, tool_decision,
+                  sanitize_for_diagnostics, diagnostic_reasons)
 
 
 def base_case(message="Summarize this project.", tool=None):
