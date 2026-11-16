@@ -125,7 +125,7 @@ def is_harmful_request(case: dict) -> bool:
         h,
     )
     quoted_context = re.search(
-        r"[\\"'“‘].{0,300}(?:steal|exfiltrat|fraud|malware|harass|threat|injur).{0,300}[\\"'”’]",
+        r"""["'“‘].{0,300}(?:steal|exfiltrat|fraud|malware|harass|threat|injur).{0,300}["'”’]""",
         h, re.I | re.S,
     )
     asks_for_execution = re.search(
