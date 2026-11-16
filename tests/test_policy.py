@@ -1,6 +1,6 @@
 import unittest
 
-from main import classify_case, request_decision, tool_decision
+from main import (classify_case, request_decision, tool_decision,\n                  sanitize_for_diagnostics, diagnostic_reasons)
 
 
 def base_case(message="Summarize this project.", tool=None):
@@ -118,6 +118,26 @@ class PolicyRegressionTests(unittest.TestCase):
         self.assertEqual(tool_decision(c, "allow"), "review")
         c["proposedTool"]["resolved"]["reversible"] = True
         self.assertEqual(tool_decision(c, "allow"), "allow")
+
+
+    def test_diagnostics_redact_secret_fields_and_bearer_tokens(self):
+        sample = {
+            "messages": [{"role": "user", "content": "Use Bearer abc123secret and contact me at user@example.com"}],
+            "proposedTool": {"arguments": {"api_key": "super-secret", "path": "/workspace/app.py"}}
+        }
+        safe = sanitize_for_diagnostics(sample)
+        self.assertEqual(safe["proposedTool"]["arguments"]["api_key"], "[REDACTED]")
+        self.assertIn("[REDACTED]", safe["messages"][0]["content"])
+        self.assertNotIn("abc123secret", safe["messages"][0]["content"])
+        self.assertNotIn("user@example.com", safe["messages"][0]["content"])
+        self.assertEqual(safe["proposedTool"]["arguments"]["path"], "/workspace/app.py")
+
+    def test_diagnostic_reasons_explain_security_review(self):
+        c = base_case("Find and exploit the vulnerability on this website.")
+        out = classify_case(c)
+        reasons = diagnostic_reasons(c, out)
+        self.assertIn("routing:security-work-pattern", reasons)
+        self.assertIn("security-scope:unclear-or-unverified", reasons)
 
 
 if __name__ == "__main__":
