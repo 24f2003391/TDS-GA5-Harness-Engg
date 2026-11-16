@@ -431,6 +431,121 @@ def classify_case(case: dict) -> dict:
     }
 
 
+# Temporary, detailed diagnostics. Secrets and common direct identifiers are redacted
+# before anything is written to Render logs. Keep this enabled only while debugging.
+SENSITIVE_KEY = re.compile(
+    r"(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|authorization|cookie|credential|"
+    r"access[_-]?key|refresh[_-]?token|client[_-]?secret)", re.I
+)
+BEARER_RE = re.compile(r"(?i)\\bBearer\\s+[A-Za-z0-9._~+/=-]+")
+EMAIL_RE = re.compile(r"(?i)\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b")
+PHONE_RE = re.compile(r"(?<!\\w)(?:\\+?\\d[\\d .()\\-]{7,}\\d)(?!\\w)")
+
+
+def redact_text(value: str, limit: int = 12000) -> str:
+    value = BEARER_RE.sub("Bearer [REDACTED]", value)
+    value = EMAIL_RE.sub("[EMAIL REDACTED]", value)
+    value = PHONE_RE.sub("[PHONE REDACTED]", value)
+    if len(value) > limit:
+        value = value[:limit] + f"... [TRUNCATED; original length={len(value)}]"
+    return value
+
+
+def sanitize_for_diagnostics(value: Any, depth: int = 0) -> Any:
+    """Preserve useful request structure while redacting secrets and bounding log size."""
+    if depth > 12:
+        return "[MAX DEPTH]"
+    if isinstance(value, dict):
+        out = {}
+        for key, child in value.items():
+            key_text = str(key)
+            if SENSITIVE_KEY.search(key_text):
+                out[key_text] = "[REDACTED]"
+            else:
+                out[key_text] = sanitize_for_diagnostics(child, depth + 1)
+        return out
+    if isinstance(value, list):
+        items = [sanitize_for_diagnostics(x, depth + 1) for x in value[:100]]
+        if len(value) > 100:
+            items.append(f"[{len(value) - 100} additional items omitted]")
+        return items
+    if isinstance(value, str):
+        return redact_text(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return redact_text(str(value))
+
+
+def diagnostic_reasons(case: dict, result: dict) -> list[str]:
+    """Explain observed policy signals without changing classifier decisions."""
+    reasons = []
+    h = history(case)
+    facts = tool_facts(case)
+    if is_harmful_request(case):
+        reasons.append("request:harmful-purpose-pattern")
+    elif has_pattern(h, HARMFUL_PATTERNS):
+        reasons.append("request:harmful-phrase-present-but-treated-as-quoted-or-analysis")
+    if is_security_work(case):
+        reasons.append("routing:security-work-pattern")
+        reasons.append(
+            "security-scope:owned-isolated" if is_owned_isolated_security_scope(case)
+            else "security-scope:unclear-or-unverified"
+        )
+    if has_pattern(text([
+        case.get("memory", []), case.get("repositoryInstructions", []), case.get("toolResults", [])
+    ]), INJECTION_PATTERNS):
+        reasons.append("trajectory:untrusted-injection-pattern")
+    if not case.get("proposedTool"):
+        reasons.append("tool:no-proposed-tool")
+    else:
+        if not facts["resolved"]:
+            reasons.append("tool:missing-resolved-metadata")
+        if facts["operation"] in READS:
+            reasons.append("tool:read-operation")
+        if facts["operation"] in MUTATIONS:
+            reasons.append("tool:mutation-operation")
+        if facts["operation"] in TRANSFERS:
+            reasons.append("tool:data-transfer-operation")
+        if facts["environment_name"] in {"production", "prod"} or "production" in facts["target"].lower():
+            reasons.append("tool:production-effect")
+        if facts["sensitivity"] in {"private", "confidential", "sensitive"}:
+            reasons.append("tool:sensitive-data")
+        if facts["sensitivity"] == "unknown":
+            reasons.append("tool:unknown-sensitivity")
+        if "credential" in facts["target"].lower() or "password" in facts["target"].lower():
+            reasons.append("tool:credential-target")
+        if independently_forbidden_tool(case, facts):
+            reasons.append("tool:independently-forbidden")
+        if facts["operation"] in MUTATIONS and facts["environment_name"] in {"production", "prod"}:
+            reasons.append("tool:preflight-" + ("present" if successful_preflight(case, facts["target"]) else "missing-or-unmatched"))
+            reasons.append("tool:rollback-" + ("present" if exact_rollback(case, facts["target"], facts["operation"]) else "missing-or-unmatched"))
+        if exact_authorization(case, facts["operation"], facts["target"], facts["environment_name"]):
+            reasons.append("authorization:exact-match-detected")
+        else:
+            reasons.append("authorization:exact-match-not-detected")
+    reasons.append("decision:" + result["requestDecision"] + "/" + result["toolDecision"] + "/" + result["route"] + "/" + result["trajectory"])
+    return reasons
+
+
+def log_case_diagnostics(case: dict, result: dict, index: int, batch_id: str) -> None:
+    record = {
+        "event": "CASE_DIAGNOSTICS",
+        "batch_id": redact_text(batch_id, 200),
+        "case_index": index,
+        "case_id": redact_text(str(case.get("caseId", "")), 200),
+        "decisions": {k: result[k] for k in ("requestDecision", "toolDecision", "route", "trajectory")},
+        "reasons": diagnostic_reasons(case, result),
+        "input": sanitize_for_diagnostics(case),
+    }
+    encoded = json.dumps(record, sort_keys=True, ensure_ascii=False, default=str)
+    # Bound each line so a single pathological case cannot flood application logs.
+    if len(encoded) > 30000:
+        record["input"] = {"truncated": True, "note": "Sanitized case exceeded 30,000 log characters"}
+        record["input_preview"] = encoded[:20000]
+        encoded = json.dumps(record, sort_keys=True, ensure_ascii=False, default=str)
+    logger.info("CASE_DIAGNOSTICS %s", encoded)
+
+
 def batch_diagnostics(cases: list[dict], results: list[dict]) -> dict:
     """Aggregate safe feature counts; never log raw text, IDs, paths or arguments."""
     def counts(values):
@@ -510,5 +625,8 @@ async def classify_batch(request: Request):
         results = [classify_case(case) for case in cases]
     except (KeyError, TypeError, AttributeError):
         raise HTTPException(status_code=400, detail="malformed case")
+    # Log one sanitized, inspectable record per case plus a compact batch summary.
+    for index, (case, result) in enumerate(zip(cases, results), start=1):
+        log_case_diagnostics(case, result, index, batch_id)
     logger.info("BATCH_DIAGNOSTICS %s", json.dumps(batch_diagnostics(cases, results), sort_keys=True))
     return JSONResponse({"profile": PROFILE, "batchId": batch_id, "results": results})
