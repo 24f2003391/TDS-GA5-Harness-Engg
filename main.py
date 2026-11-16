@@ -543,7 +543,7 @@ def log_case_diagnostics(case: dict, result: dict, index: int, batch_id: str) ->
         record["input"] = {"truncated": True, "note": "Sanitized case exceeded 30,000 log characters"}
         record["input_preview"] = encoded[:20000]
         encoded = json.dumps(record, sort_keys=True, ensure_ascii=False, default=str)
-    logger.info("CASE_DIAGNOSTICS %s", encoded)
+    print("CASE_DIAGNOSTICS " + encoded, flush=True)
 
 
 def batch_diagnostics(cases: list[dict], results: list[dict]) -> dict:
@@ -628,5 +628,5 @@ async def classify_batch(request: Request):
     # Log one sanitized, inspectable record per case plus a compact batch summary.
     for index, (case, result) in enumerate(zip(cases, results), start=1):
         log_case_diagnostics(case, result, index, batch_id)
-    logger.info("BATCH_DIAGNOSTICS %s", json.dumps(batch_diagnostics(cases, results), sort_keys=True))
+    print("BATCH_DIAGNOSTICS " + json.dumps(batch_diagnostics(cases, results), sort_keys=True), flush=True)
     return JSONResponse({"profile": PROFILE, "batchId": batch_id, "results": results})
