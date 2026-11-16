@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+from collections import Counter
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 PROFILE = "agent-harness-2026-09"
+logger = logging.getLogger("harness_diagnostics")
 app = FastAPI(title="TDS GA5 Harness Engineering", version="2.0.0")
 
 # These phrases identify an actual prohibited purpose, not merely quoted material
@@ -427,6 +430,55 @@ def classify_case(case: dict) -> dict:
     }
 
 
+def batch_diagnostics(cases: list[dict], results: list[dict]) -> dict:
+    """Aggregate safe feature counts; never log raw text, IDs, paths or arguments."""
+    def counts(values):
+        return dict(sorted(Counter(values).items()))
+
+    operations, environments, sensitivities = [], [], []
+    request_labels, tool_labels, routes, trajectories = [], [], [], []
+    flags = Counter()
+    for case, result in zip(cases, results):
+        facts = tool_facts(case)
+        operations.append(facts["operation"] or "missing")
+        environments.append(facts["environment_name"] or "missing")
+        sensitivities.append(facts["sensitivity"] or "missing")
+        request_labels.append(result["requestDecision"])
+        tool_labels.append(result["toolDecision"])
+        routes.append(result["route"])
+        trajectories.append(result["trajectory"])
+
+        flags["has_tool"] += int(bool(case.get("proposedTool")))
+        flags["security_request"] += int(is_security_work(case))
+        flags["owned_isolated_security_scope"] += int(is_owned_isolated_security_scope(case))
+        flags["harmful_request_detected"] += int(is_harmful_request(case))
+        flags["untrusted_injection_signal"] += int(has_pattern(text([
+            case.get("memory", []), case.get("repositoryInstructions", []),
+            case.get("toolResults", [])
+        ]), INJECTION_PATTERNS))
+        flags["production_effect"] += int(
+            facts["environment_name"] in {"production", "prod"}
+            or "production" in facts["target"].lower()
+        )
+        flags["transfer_operation"] += int(facts["operation"] in TRANSFERS)
+        flags["credential_target"] += int(
+            "credential" in facts["target"].lower() or "password" in facts["target"].lower()
+        )
+        flags["missing_resolved_metadata"] += int(not bool(facts["resolved"]))
+    return {
+        "event": "batch_diagnostics",
+        "case_count": len(cases),
+        "request_decisions": counts(request_labels),
+        "tool_decisions": counts(tool_labels),
+        "routes": counts(routes),
+        "trajectories": counts(trajectories),
+        "operations": counts(operations),
+        "environments": counts(environments),
+        "sensitivities": counts(sensitivities),
+        "feature_counts": dict(sorted(flags.items())),
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "profile": PROFILE}
@@ -457,4 +509,5 @@ async def classify_batch(request: Request):
         results = [classify_case(case) for case in cases]
     except (KeyError, TypeError, AttributeError):
         raise HTTPException(status_code=400, detail="malformed case")
+    logger.info("BATCH_DIAGNOSTICS %s", json.dumps(batch_diagnostics(cases, results), sort_keys=True))
     return JSONResponse({"profile": PROFILE, "batchId": batch_id, "results": results})
