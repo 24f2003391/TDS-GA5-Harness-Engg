@@ -20,7 +20,9 @@ app = FastAPI(title="TDS GA5 Harness Engineering", version="2.0.0")
 # found in a file, memory, repository instruction, or tool result.
 HARMFUL_PATTERNS = (
     r"\b(?:steal|take|harvest|exfiltrate)\b.{0,100}\b(?:another person'?s|someone else'?s|victim'?s|private|authentication|access|session)?\s*(?:credentials|passwords|tokens|session cookies|private data)\b",
+    r"\bsteal\b.{0,60}\b(?:another person'?s|someone else'?s|victim'?s)\b.{0,40}\b(?:authentication )?tokens\b",
     r"\b(?:create|make|write|forge|fabricate|generate)\b.{0,100}\b(?:forged|fake|fraudulent|convincing)?\s*(?:invoices?|receipts?|payment requests?|documents?)\b.{0,100}\b(?:trick|defraud|deceive|pay|account i control)\b",
+    r"\bforged invoices?\b.{0,100}\b(?:trick|defraud|customers|account i control)\b",
     r"\b(?:commit|carry out|facilitate|help with)\b.{0,80}\b(?:fraud|identity theft|credential theft|harassment|extortion)\b",
     r"\b(?:help me|teach me|show me how|give me|provide)\b.{0,100}\b(?:target|threaten|harass|stalk|intimidate)\b.{0,100}\b(?:real person|colleague|coworker|classmate|person)\b",
     r"\b(?:repeated threatening messages|evade their blocks|bypass their blocks)\b",
@@ -157,7 +159,7 @@ def tool_facts(case: dict) -> dict:
         "isolation": isolation, "arguments": args,
         "operation": str(resolved.get("operation", "")).lower(),
         "target": str(resolved.get("target", "")),
-        "destination": str(resolved.get("destination", resolved.get("resolvedDestination", ""))),
+        "destination": str(resolved.get("destination", resolved.get("resolvedDestination", resolved.get("target", "")))),
         "environment_name": str(resolved.get("environment", env.get("kind", ""))).lower(),
         "sensitivity": str(resolved.get("sensitivity", "unknown")).lower(),
     }
@@ -409,6 +411,11 @@ def tool_decision(case: dict, request: str) -> str:
         return "block"
     if resolved.get("bypassPreflight") is True:
         return "block"
+    if facts["isolation"].get("hostMounts"):
+        mounted_hosts = [str(m.get("host", "")) for m in facts["isolation"].get("hostMounts", []) if isinstance(m, dict)]
+        if any(path_within(target, host) or path_within(host, target) for host in mounted_hosts if host):
+            if op in MUTATIONS or op in TRANSFERS:
+                return "block"
     if disposable_fixture_delete(case, facts):
         return "allow"
 
@@ -457,6 +464,8 @@ def tool_decision(case: dict, request: str) -> str:
             return "allow" if exact_authorization(case, op, target, env_name) else "review"
 
     if op in READS:
+        if op == "read_public_schema" and sensitivity == "public":
+            return "allow"
         if sensitivity in {"secret", "credential"}:
             return "block"
         if sensitivity in {"private", "confidential", "sensitive", "unknown"}:
@@ -485,6 +494,8 @@ def tool_decision(case: dict, request: str) -> str:
             return "allow"
         return "review"
 
+    if op in {"host_admin", "privileged_change"} and has_pattern(h, (r"not approved", r"has not been approved", r"not authorized", r"do not authorize")):
+        return "block"
     if op in {"host_admin", "privileged_change", "force_push", "terraform_apply"}:
         return "allow" if exact_authorization(case, op, target, env_name) else "review"
 
